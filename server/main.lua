@@ -1,0 +1,620 @@
+local RESOURCE_NAME = GetCurrentResourceName()
+
+local dependencies = {
+    qbx_core = false,
+    ox_lib = false,
+    ox_inventory = false,
+}
+
+local registeredPlayers = {}
+local zombiesByBucket = {}
+local dependencyWarningShown = false
+
+local function log(level, message)
+    print(("[%s] [%s] %s"):format(RESOURCE_NAME, level, message))
+end
+
+local function isResourceActive(resourceName)
+    local state = GetResourceState(resourceName)
+    return state == 'started' or state == 'starting'
+end
+
+local function refreshDependencies()
+    for resourceName in pairs(dependencies) do
+        dependencies[resourceName] = isResourceActive(resourceName)
+    end
+end
+
+local function startupValidation()
+    refreshDependencies()
+
+    log('INFO', ('Qbox active: %s'):format(dependencies.qbx_core and 'yes' or 'no'))
+    log('INFO', ('ox_lib active: %s'):format(dependencies.ox_lib and 'yes' or 'no'))
+    log('INFO', ('ox_inventory active: %s'):format(dependencies.ox_inventory and 'yes' or 'no'))
+
+    if not dependencies.qbx_core then
+        log('WARN', 'qbx_core is not active. Zombie framework hooks will stay idle until it is started.')
+    end
+end
+
+local function hasExport(resourceName, exportName)
+    return pcall(function()
+        return exports[resourceName][exportName]
+    end)
+end
+
+local function getQboxPlayer(source)
+    if not dependencies.qbx_core then
+        return nil
+    end
+
+    if not hasExport('qbx_core', 'GetPlayer') then
+        return nil
+    end
+
+    local ok, player = pcall(function()
+        return exports.qbx_core:GetPlayer(source)
+    end)
+
+    if not ok then
+        return nil
+    end
+
+    return player
+end
+
+local function canRunZombieLogic()
+    refreshDependencies()
+
+    if not dependencies.qbx_core then
+        if not dependencyWarningShown then
+            log('WARN', 'Zombie logic paused: qbx_core dependency unavailable.')
+            dependencyWarningShown = true
+        end
+        return false
+    end
+
+    dependencyWarningShown = false
+    return true
+end
+
+local function getBucketForPlayer(source)
+    local bucket = GetPlayerRoutingBucket(source)
+    if bucket == nil then
+        return 0
+    end
+
+    return bucket
+end
+
+local function registerPlayer(source, origin)
+    if not canRunZombieLogic() then
+        return
+    end
+
+    local player = getQboxPlayer(source)
+    if not player then
+        return
+    end
+
+    local bucket = getBucketForPlayer(source)
+    registeredPlayers[source] = {
+        source = source,
+        bucket = bucket,
+        origin = origin,
+    }
+
+    zombiesByBucket[bucket] = zombiesByBucket[bucket] or { population = 0 }
+
+    log('INFO', ('Registered player %s from %s in bucket %s'):format(source, origin, bucket))
+end
+
+local function cleanupPlayer(source, reason)
+    local session = registeredPlayers[source]
+    if not session then
+        return
+    end
+
+    local bucket = session.bucket or 0
+    registeredPlayers[source] = nil
+
+    local bucketData = zombiesByBucket[bucket]
+    if bucketData then
+        bucketData.population = 0
+        if next(bucketData) == nil or bucketData.population == 0 then
+            zombiesByBucket[bucket] = nil
+        end
+    end
+
+    log('INFO', ('Cleaned zombie/session state for player %s (%s)'):format(source, reason or 'unknown'))
+end
+
+local function spawnZombiesForPlayer(source)
+    if not canRunZombieLogic() then
+        return
+    end
+
+    local session = registeredPlayers[source]
+    if not session then
+        return
+    end
+
+    local bucket = getBucketForPlayer(source)
+    if bucket ~= session.bucket then
+        session.bucket = bucket
+    end
+
+    local bucketData = zombiesByBucket[bucket] or { population = 0 }
+    zombiesByBucket[bucket] = bucketData
+
+    bucketData.population = bucketData.population + 1
+
+    TriggerClientEvent('twta-zombies:client:spawnBucketWave', source, {
+        bucket = bucket,
+        targetPopulation = bucketData.population,
+    })
+end
+
+local function registerQboxEvents()
+    -- Qbox event naming can vary between legacy and current bridges, so listen for both.
+    RegisterNetEvent('qbx_core:server:playerLoaded', function(playerSource)
+        registerPlayer(playerSource or source, 'qbx_core:server:playerLoaded')
+    end)
+
+    RegisterNetEvent('QBCore:Server:PlayerLoaded', function(playerSource)
+        registerPlayer(playerSource or source, 'QBCore:Server:PlayerLoaded')
+    end)
+
+    RegisterNetEvent('qbx_core:server:playerUnloaded', function(playerSource)
+        cleanupPlayer(playerSource or source, 'qbx_core:server:playerUnloaded')
+    end)
+
+    RegisterNetEvent('QBCore:Server:OnPlayerUnload', function(playerSource)
+        cleanupPlayer(playerSource or source, 'QBCore:Server:OnPlayerUnload')
+    end)
+end
+
+AddEventHandler('onResourceStart', function(resourceName)
+    if resourceName ~= RESOURCE_NAME then
+        return
+    end
+
+    startupValidation()
+    registerQboxEvents()
+end)
+
+AddEventHandler('onResourceStop', function(resourceName)
+    if resourceName ~= RESOURCE_NAME then
+        return
+    end
+
+    for playerSource in pairs(registeredPlayers) do
+        cleanupPlayer(playerSource, 'resource stop')
+    end
+end)
+
+AddEventHandler('playerDropped', function(reason)
+    cleanupPlayer(source, reason or 'disconnect')
+end)
+
+RegisterNetEvent('twta-zombies:server:requestSpawn', function()
+    spawnZombiesForPlayer(source)
+end)
+
+CreateThread(function()
+    while true do
+        Wait(20000)
+
+        if canRunZombieLogic() then
+            for playerSource in pairs(registeredPlayers) do
+                spawnZombiesForPlayer(playerSource)
+            end
+        end
+local searchedNetIds = {}
+
+local function pickLootItems()
+    local lootResults = {}
+
+    for i = 1, #Config.Loot.table do
+        local loot = Config.Loot.table[i]
+        local chance = math.random(1, 100)
+
+        if chance <= loot.chance then
+            local amount = math.random(loot.min, loot.max)
+            lootResults[#lootResults + 1] = {
+                item = loot.item,
+                count = amount,
+                label = loot.label
+local ZOMBIE_GROUP_HASH = GetHashKey(Config.RelationshipGroups.zombie)
+
+local zombies = {}
+local modelCursor = 1
+local spawnCursor = 1
+
+local function nowMs()
+    return GetGameTimer()
+end
+
+local function isNightHour(hour)
+    return hour >= 20 or hour < 6
+end
+
+local function getDesiredMultiplier()
+    local hour = tonumber(os.date("%H")) or 12
+    if isNightHour(hour) then
+        return Config.DayNightMultiplier.night or 1.0
+    end
+
+    return Config.DayNightMultiplier.day or 1.0
+end
+
+local function clamp(value, minValue, maxValue)
+    if value < minValue then
+        return minValue
+    end
+    if value > maxValue then
+        return maxValue
+    end
+    return value
+end
+
+local function getPlayerPedAndCoords(src)
+    local ped = GetPlayerPed(src)
+    if ped == 0 or not DoesEntityExist(ped) then
+        return nil, nil
+    end
+
+    return ped, GetEntityCoords(ped)
+end
+
+local function getOnlinePlayers()
+    local players = {}
+
+    for _, src in ipairs(GetPlayers()) do
+        local ped, coords = getPlayerPedAndCoords(src)
+        if ped and coords then
+            players[#players + 1] = {
+                src = src,
+                ped = ped,
+                coords = coords,
+            }
+        end
+    end
+
+    return lootResults
+end
+
+local function entityIsValidZombie(entity)
+    if not entity or entity == 0 or not DoesEntityExist(entity) or not IsEntityAPed(entity) then
+        return false
+    end
+
+    if Config.Search.requireDead and not IsEntityDead(entity) then
+        return false
+    end
+
+    if Config.Target.allowedModels and #Config.Target.allowedModels > 0 then
+        local model = GetEntityModel(entity)
+        local allowed = false
+
+        for i = 1, #Config.Target.allowedModels do
+            if model == Config.Target.allowedModels[i] then
+                allowed = true
+                break
+            end
+        end
+
+        if not allowed then
+            return false
+        end
+    return players
+end
+
+local function distance(a, b)
+    return #(a - b)
+end
+
+local function getZoneDensity(coords)
+    local bestDensity = 1.0
+    local foundZone = false
+
+    for _, zone in ipairs(Config.SpawnZones or {}) do
+        if distance(coords, zone.center) <= zone.radius then
+            bestDensity = zone.density or 1.0
+            foundZone = true
+            break
+        end
+    end
+
+    if not foundZone then
+        return 0.55
+    end
+
+    return bestDensity
+end
+
+local function calculateDesiredCount(players)
+    if #players == 0 then
+        return 0
+    end
+
+    local aggregateDensity = 0.0
+    for _, player in ipairs(players) do
+        aggregateDensity = aggregateDensity + getZoneDensity(player.coords)
+    end
+
+    local averageDensity = aggregateDensity / #players
+    local base = math.floor((#players * Config.ZombiesPerPlayer) * averageDensity)
+    local withTime = math.floor(base * getDesiredMultiplier())
+
+    return clamp(withTime, Config.MinZombies, Config.MaxZombies)
+end
+
+local function ensureRelationshipGroups()
+    AddRelationshipGroup(Config.RelationshipGroups.zombie)
+
+    SetRelationshipBetweenGroups(5, ZOMBIE_GROUP_HASH, GetHashKey(Config.RelationshipGroups.player))
+    SetRelationshipBetweenGroups(5, GetHashKey(Config.RelationshipGroups.player), ZOMBIE_GROUP_HASH)
+end
+
+local function pickModelHash()
+    if #Config.ZombieModels == 0 then
+        return nil
+    end
+
+    local index = ((modelCursor - 1) % #Config.ZombieModels) + 1
+    modelCursor = modelCursor + 1
+    return Config.ZombieModels[index]
+end
+
+local function tryLoadModel(modelHash)
+    if not IsModelInCdimage(modelHash) then
+        return false
+    end
+
+    RequestModel(modelHash)
+    local timeoutAt = nowMs() + 5000
+    while not HasModelLoaded(modelHash) do
+        if nowMs() > timeoutAt then
+            return false
+        end
+        Wait(25)
+    end
+
+    return true
+end
+
+lib.callback.register('twta_zombies:server:searchZombie', function(source, netId)
+    if not netId or searchedNetIds[netId] then
+        return {
+            success = false,
+            message = Config.Notifications.alreadySearched
+        }
+    end
+
+    local entity = NetworkGetEntityFromNetworkId(netId)
+    if not entityIsValidZombie(entity) then
+        return {
+            success = false,
+            message = Config.Notifications.invalidTarget
+        }
+    end
+
+    local items = pickLootItems()
+
+    for i = 1, #items do
+        local loot = items[i]
+        exports.ox_inventory:AddItem(source, loot.item, loot.count)
+    end
+
+    searchedNetIds[netId] = true
+
+    return {
+        success = true,
+        items = items
+    }
+local function pickAnchorPlayer(players)
+    if #players == 0 then
+        return nil
+    end
+
+    local index = ((spawnCursor - 1) % #players) + 1
+    spawnCursor = spawnCursor + 1
+    return players[index]
+end
+
+local function findGroundZ(x, y, z)
+    local found, groundZ = GetGroundZFor_3dCoord(x, y, z + 25.0, false)
+    if found then
+        return groundZ + 0.5
+    end
+    return z
+end
+
+local function randomSpawnOffset(radius)
+    local angle = (spawnCursor * 57) % 360
+    local rad = math.rad(angle)
+    local spread = 20.0 + (spawnCursor % 8) * ((radius - 20.0) / 8.0)
+
+    return math.cos(rad) * spread, math.sin(rad) * spread
+end
+
+local function spawnZombieNear(players)
+    if #zombies >= Config.MaxZombies then
+        return false
+    end
+
+    local anchor = pickAnchorPlayer(players)
+    if not anchor then
+        return false
+    end
+
+    local modelHash = pickModelHash()
+    if not modelHash or not tryLoadModel(modelHash) then
+        return false
+    end
+
+    local ox, oy = randomSpawnOffset(Config.SpawnRadius)
+    local x = anchor.coords.x + ox
+    local y = anchor.coords.y + oy
+    local z = findGroundZ(x, y, anchor.coords.z)
+
+    local ped = CreatePed(4, modelHash, x, y, z, 0.0, true, true)
+    if ped == 0 then
+        SetModelAsNoLongerNeeded(modelHash)
+        return false
+    end
+
+    SetEntityAsMissionEntity(ped, true, true)
+    SetPedRelationshipGroupHash(ped, ZOMBIE_GROUP_HASH)
+    SetPedMaxHealth(ped, Config.ZombieHealth)
+    SetEntityHealth(ped, Config.ZombieHealth)
+    SetPedArmour(ped, Config.ZombieArmor)
+    SetPedSeeingRange(ped, Config.AggroRange)
+    SetPedHearingRange(ped, Config.AggroRange)
+    SetPedAlertness(ped, 3)
+    SetPedFleeAttributes(ped, 0, false)
+    SetPedCombatAttributes(ped, 46, true)
+    SetPedCombatAttributes(ped, 5, true)
+    SetPedCombatRange(ped, 0)
+    SetPedKeepTask(ped, true)
+
+    local netId = NetworkGetNetworkIdFromEntity(ped)
+    SetNetworkIdCanMigrate(netId, true)
+    Entity(ped).state:set("isZombie", true, true)
+
+    zombies[#zombies + 1] = {
+        ped = ped,
+        spawnedAt = nowMs(),
+        lastTaskAt = 0,
+        lastAttackAt = 0,
+        deadAt = nil,
+    }
+
+    SetModelAsNoLongerNeeded(modelHash)
+    return true
+end
+
+local function getNearestPlayer(players, coords)
+    local nearest = nil
+    local nearestDistance = math.huge
+
+    for _, player in ipairs(players) do
+        local d = distance(coords, player.coords)
+        if d < nearestDistance then
+            nearest = player
+            nearestDistance = d
+        end
+    end
+
+    return nearest, nearestDistance
+end
+
+local function damagePlayerPed(playerPed)
+    local currentHealth = GetEntityHealth(playerPed)
+    if currentHealth <= 0 then
+        return
+    end
+
+    local newHealth = currentHealth - Config.AttackDamage
+    if newHealth < 0 then
+        newHealth = 0
+    end
+
+    SetEntityHealth(playerPed, newHealth)
+end
+
+local function cleanupZombieAt(index)
+    local zombie = zombies[index]
+    if not zombie then
+        return
+    end
+
+    if zombie.ped and DoesEntityExist(zombie.ped) then
+        DeleteEntity(zombie.ped)
+    end
+
+    zombies[index] = zombies[#zombies]
+    zombies[#zombies] = nil
+end
+
+local function cleanupOverflow()
+    while #zombies > Config.MaxZombies do
+        cleanupZombieAt(#zombies)
+    end
+end
+
+local function updateZombieAi(players)
+    local tickNow = nowMs()
+
+    for i = #zombies, 1, -1 do
+        local zombie = zombies[i]
+
+        if not zombie.ped or not DoesEntityExist(zombie.ped) then
+            cleanupZombieAt(i)
+        else
+            local zombieCoords = GetEntityCoords(zombie.ped)
+            local nearestPlayer, nearestDistance = getNearestPlayer(players, zombieCoords)
+
+            if IsEntityDead(zombie.ped) then
+                zombie.deadAt = zombie.deadAt or tickNow
+                if tickNow - zombie.deadAt >= Config.DeadDespawnMs then
+                    cleanupZombieAt(i)
+                end
+            elseif not nearestPlayer or nearestDistance > Config.DespawnDistance then
+                cleanupZombieAt(i)
+            else
+                if nearestDistance <= Config.AggroRange and (tickNow - zombie.lastTaskAt) >= 850 then
+                    TaskGoToEntity(zombie.ped, nearestPlayer.ped, -1, 0.0, 2.2, 0.0, 0)
+                    zombie.lastTaskAt = tickNow
+                end
+
+                if nearestDistance <= Config.AttackRange and (tickNow - zombie.lastAttackAt) >= Config.AttackCooldownMs then
+                    damagePlayerPed(nearestPlayer.ped)
+                    zombie.lastAttackAt = tickNow
+                end
+            end
+        end
+    end
+
+    cleanupOverflow()
+end
+
+CreateThread(function()
+    ensureRelationshipGroups()
+
+    while true do
+        local players = getOnlinePlayers()
+        local desiredCount = calculateDesiredCount(players)
+        local canSpawn = desiredCount - #zombies
+
+        if canSpawn > 0 and #players > 0 then
+            for _ = 1, canSpawn do
+                if #zombies >= Config.MaxZombies then
+                    break
+                end
+
+                if not spawnZombieNear(players) then
+                    break
+                end
+            end
+        elseif canSpawn < 0 then
+            for _ = 1, math.abs(canSpawn) do
+                if #zombies == 0 then
+                    break
+                end
+                cleanupZombieAt(#zombies)
+            end
+        end
+
+        Wait(Config.SpawnTickMs)
+    end
+end)
+
+CreateThread(function()
+    while true do
+        local players = getOnlinePlayers()
+        updateZombieAi(players)
+        Wait(Config.AiTickMs)
+    end
+end)
