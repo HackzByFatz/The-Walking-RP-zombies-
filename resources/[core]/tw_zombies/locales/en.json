@@ -1,0 +1,8 @@
+{
+    "resource_label": "Zombie Outbreak",
+    "zombies_enabled": "Zombie outbreak mode enabled.",
+    "zombies_disabled": "Zombie outbreak mode disabled.",
+    "zombie_kill_milestone": "You have eliminated %s zombies.",
+    "no_permission": "You do not have permission to run this command.",
+    "usage": "Usage: /%s [on|off|toggle]"
+}
