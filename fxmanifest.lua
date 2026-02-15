@@ -25,3 +25,7 @@ dependencies {
     'ox_target',
     'ox_inventory'
 }
+shared_script 'config.lua'
+
+server_script 'server/main.lua'
+client_script 'client/main.lua'
